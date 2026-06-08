@@ -1,4 +1,4 @@
-name: deploiment
+name: dataprophet
 channels:
   - conda-forge
   - defaults
