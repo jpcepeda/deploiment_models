@@ -1,0 +1,20 @@
+name: deploiment
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - matplotlib
+  - seaborn
+  - pmdarima
+  - statsmodels
+  - prophet
+  - sktime
+  - ipykernel
+  - pandas
+  - plotly
+  - fastapi
+  - joblib
+  - pydantic
