@@ -3,134 +3,121 @@ DataProphet — API de prédiction
 Référence doc officielle : https://fastapi.tiangolo.com/tutorial/first-steps/
 """
 
-# ── 1. Import ────────────────────────────────────────────────────────────────
-from fastapi import FastAPI
-import uvicorn
-from schemas import CustomerFeatures, PredictionResponse, ChurnLabel
 from contextlib import asynccontextmanager
+import joblib
+import numpy as np
+import pandas as pd
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from schemas import CustomerFeatures, PredictionResponse
 
 
-
-#########################
 # ── 1. Lifespan — chargement du modèle ───────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # DÉMARRAGE
-    print("⏳ Chargement du modèle...")
-    app.state.model = joblib.load("model.joblib")
-    app.state.feature_order = [
-        "anciennete_mois",
-        "nb_produits",
-        "montant_mensuel",
-        "nb_appels_support",
-        "score_satisfaction",
-        "age",
-    ]
-    print("✅ Modèle chargé :", type(app.state.model).__name__)
+    print("Chargement du modèle...")
+    with open("ml1_rf_model.pkl", "rb") as f:
+        app.state.model = joblib.load(f)
 
-    yield  # ← l'API accepte des requêtes ici
+    app.state.feature_order = [
+        "genre_bota",
+        "espece",
+        "stadededeveloppement",
+        "hauteurarbre",
+        "typenature",
+        "latitude",
+        "longitude",
+    ]
+    print("Modèle chargé :", type(app.state.model).__name__)
+
+    yield  # ← l'API tourne ici
 
     # ARRÊT
     del app.state.model
-    print("🛑 Modèle libéré")
-
-######################################################
+    print("Modèle libéré")
 
 
-
-# ── 2. Instanciation de l'application avec titre et description ───────────────
-#    Source : https://fastapi.tiangolo.com/tutorial/metadata/
+# ── 2. Instanciation ──────────────────────────────────────────────────────────
 app = FastAPI(
-    title="DataProphet — API Prédiction",
+    title="DataProphet — API Arbres",
     description=(
-        "API exposant le modèle de scoring à l'équipe commerciale.\n\n"
-        "- **`/health`** : vérifie que le service est actif\n"
-        "- **`/predict`** : envoie des features, reçoit une prédiction\n\n"
-        "Documentation interactive disponible sur `/docs` (Swagger UI) "
-        "et `/redoc` (ReDoc)."
+        "Prédit l'année de plantation d'un arbre "
+        "à partir de ses caractéristiques botaniques et géographiques.\n\n"
+        "Documentation interactive sur `/docs`."
     ),
     version="1.0.0",
+    lifespan=lifespan,
 )
 
-# ── 3. Route GET /health ──────────────────────────────────────────────────────
+
+# ── 3. GET /health ────────────────────────────────────────────────────────────
 #    Source : https://fastapi.tiangolo.com/tutorial/first-steps/#define-a-path-operation
 @app.get("/health", tags=["Système"])
 def health():
-    """
-    Vérifie que le service est actif.
+    model_ok = hasattr(app.state, "model") and app.state.model is not None
+    return {
+        "status":       "ok" if model_ok else "degraded",
+        "service":      "DataProphet Arbres API",
+        "model_loaded": model_ok,
+    }
 
-    Retourne un JSON `{ "status": "ok", "service": "DataProphet API" }`.
-    """
-    return {"status": "ok", "service": "DataProphet API"}
 
-
-
-###########
-
-# ── 3. POST /api/predict ──────────────────────────────────────────────────────
+# ── 4. POST /api/predict ──────────────────────────────────────────────────────
 #    Référence : https://fastapi.tiangolo.com/tutorial/body/
 @app.post(
     "/api/predict",
     response_model=PredictionResponse,
     tags=["Prédiction"],
-    summary="Prédire le risque de churn d'un client",
+    summary="Prédire l'année de plantation d'un arbre",
 )
-def predict(customer: CustomerFeatures) -> PredictionResponse:
+def predict(arbre: CustomerFeatures) -> PredictionResponse:
     """
-    Reçoit les **features d'un client** et retourne une **prédiction de churn**.
- 
-    - Valide automatiquement toutes les contraintes définies dans `CustomerFeatures`
-    - Retourne un score numérique **et** un label lisible pour l'équipe commerciale
-    - ⚠️ La prédiction est actuellement **factice** — le vrai modèle sera branché
-      à l'étape suivante.
+    Reçoit les caractéristiques d'un arbre et retourne
+    l'année de plantation prédite par le modèle.
     """
- 
-    # ── Prédiction factice (stub) ─────────────────────────────────────────────
-    # Logique simpliste basée sur les features : remplacée par model.predict()
-    # à l'étape suivante.
-    score_brut = 0.0
- 
-    # Facteurs haussiers du risque
-    if customer.nb_appels_support >= 5:
-        score_brut += 0.35
-    if customer.score_satisfaction < 5.0:
-        score_brut += 0.30
-    if customer.anciennete_mois < 6:
-        score_brut += 0.20
-    if customer.nb_produits == 1:
-        score_brut += 0.15
- 
-    prediction = min(round(score_brut, 2), 1.0)
- 
-    # Conversion en label lisible
-    if prediction < 0.35:
-        label = ChurnLabel.FAIBLE_RISQUE
-    elif prediction < 0.65:
-        label = ChurnLabel.RISQUE_MOYEN
-    else:
-        label = ChurnLabel.RISQUE_ELEVE
- 
-    # Confiance factice : haute quand le score est tranché (proche de 0 ou 1)
-    confiance = round(1.0 - 2 * abs(prediction - 0.5) + 0.5, 2)
-    confiance = min(max(confiance, 0.5), 0.99)
- 
+    model        = app.state.model
+    feature_order = app.state.feature_order
+
+    # ── Pydantic → DataFrame pandas ──────────────────────────────────────────
+    data = arbre.model_dump()
+    df   = pd.DataFrame([data], columns=feature_order)
+
+    print("Tableau envoyé au modèle :")
+    print(df.to_string())
+
+    # ── Appel du modèle ───────────────────────────────────────────────────────
+    try:
+        prediction = model.predict(df)[0]
+        annee      = int(prediction)
+
+        # Confiance via predict_proba si disponible
+        if hasattr(model, "predict_proba"):
+            probas    = model.predict_proba(df)[0]
+            confiance = round(float(probas.max()), 4)
+        else:
+            confiance = 1.0   # régression : pas de proba
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur du modèle : {str(e)}")
+
     return PredictionResponse(
-        prediction=prediction,
-        label=label,
+        annee_plantation=annee,
         confiance=confiance,
     )
- 
 
-############
 
-# ── 4. Lancement avec Uvicorn ─────────────────────────────────────────────────
+# ── 5. Lancement ──────────────────────────────────────────────────────────────
 #    Source : https://fastapi.tiangolo.com/deployment/manually/
 #    Commande équivalente en CLI :
-#      uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+#    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,   # rechargement automatique à chaque modification du code
+
     )
+
+    # Test  http://127.0.0.1:8000/docs
